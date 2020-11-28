@@ -1,0 +1,640 @@
+---
+title: "Single Cell RNA seq"
+output: html_notebook
+---
+
+```{r}
+# reads for "Cnr1" and "SRR2140055"
+reads <- counts["Cnr1", "SRR2140055"]
+reads
+
+# find the total number of zeros
+nbZero <- sum(counts == 0)
+nbZero
+
+# find the proportion of zeros
+pZero <- mean(counts == 0)
+pZero
+
+# find the total counts for each cell
+libsize <- colSums(counts)
+libsize
+```
+
+Compute cell coverage
+To find genes that are expressed in each cell, we can look at the values in the cell's column in the counts matrix: if the read count for a gene is greater than 0, then the gene is expressed.
+
+The cell coverage is the proportion of expressed genes for the cell. As we'll see later in the course, it is an important feature in scRNA-Seq. The aim of this exercise is to plot the cell coverage using ggplot2.
+
+The counts matrix from the previous exercise is available for you in your workspace. We also created a dataframe cell_info whose names column contains the names of the cells.
+
+```{r}
+# find cell coverage
+cell_info$coverage <- colMeans(counts > 0)
+
+# load ggplot2
+library(ggplot2)
+
+# plot cell coverage from matrix cell_info
+ggplot(cell_info, aes(x = names, y = coverage)) + 
+  geom_col() +
+  ggtitle('Cell Coverage') + 
+  xlab('Cell Name') + 
+  ylab('Coverage')
+```
+
+GC content
+The GC content (or guanine-cytosine content) is the percentage of bases on a DNA or RNA molecule that are either guanine (G) or cytosine (C) out of four possible bases. In addition to guanine (G) and cytosine (C), the other bases are adenine (A), and thymine (T) in DNA or uracil (U) in RNA. We'll see later in the course that GC content could be a bias in scRNA-Seq.
+
+You'll use a boxplot to explore the GC content of the genes in the toy scRNA-Seq dataset. A boxplot is used as a standardized way of displaying the distribution of data based on the five number summary: minimum, first quartile, median, third quartile, and maximum.
+
+The matrix gene_info, which is aptly named since it has all the information about the genes in the dataset, is available for you in your workspace.
+
+```{r}
+# mean of GC content
+gc_mean <- mean(gene_info$gc)
+
+# standard deviation of GC content
+gc_sd <- sd(gene_info$gc)
+
+# boxplot of GC content 
+boxplot(gene_info$gc, main = 'Boxplot - GC content', ylab = 'GC content')
+```
+
+Nesting between batches and biology
+In scRNA-Seq data analysis, we want to detect the biological signal of interest (e.g., difference of gene expression in cells from different patients) but remove the technical signals (e.g., difference of gene expression in cells sequenced from different technical batches). When biological (e.g., patients) and technical (e.g., batches) variables are confounded, it could be problematic because the two signals could be difficult to disentangle.
+
+Let's find if batch and patient are confounded in our toy scRNA-Seq dataset, whose cell information is stored in the matrix cell_info and is available in your workspace.
+
+```{r}
+cell_info
+# batch
+batch <- cell_info$batch
+
+# patient
+patient <- cell_info$patient
+
+# nesting of batch within patient
+batch_patient <- table(batch, patient)
+
+# explore batch_patient
+batch_patient
+```
+
+
+SCE object from counts matrix
+The SingleCellExperiment class is very useful for analyzing single-cell data sets. It defines a S4 class for storing data from single-cell experiments. This includes specialized methods to store and retrieve spike-in information, dimensionality reduction coordinates, and size factors for each cell, along with the usual metadata for genes and libraries. In this exercise, you will create a SingleCellExperiment object from a count matrix.
+
+The matrix counts is available in your workspace.
+```{r}
+# load SingleCellExperiment
+library(SingleCellExperiment)
+
+# create a SingleCellExperiment object
+sce <- SingleCellExperiment(assays = list(counts = counts),
+                            rowData = data.frame(gene_names = rownames(counts)),
+                            colData = data.frame(cell_names = colnames(counts)))
+# explore sce
+sce
+```
+SCE object from SummarizedExperiment
+In the last exercise, you created a SingleCellExperiment object using function SingleCellExperiment, a count matrix, and data frames with information about the genes and cells. Another way to create a SingleCellExperiment object is via coercion from an already existing SummarizedExperiment object.
+
+The data set counts is available in your workspace.
+
+```{r}
+# create a SummarizedExperiment object from counts
+se <- SummarizedExperiment(assays = list(counts = counts))
+
+# create a SingleCellExperiment object from se
+sce <- as(se, "SingleCellExperiment")
+
+# explore sce
+sce
+```
+
+Load a single-cell dataset in R
+We will now look at our first real scRNA-Seq dataset. In this exercise, you will work on a subset of the dataset allen from the package scRNAseq. The full dataset contains 379 cells from the mouse visual cortex where cells were extracted from different layers of neurons in the visual cortex.
+
+In this exercise, we'll use the function assay() from the package SingleCellExperiment to get the matrix of counts.
+
+The allen object is available for you in your workspace.
+
+```{r}
+# explore dataset allen
+allen
+
+# create SingleCellExperiment object from allen
+sce <- as(allen, "SingleCellExperiment")
+
+# explore sce
+sce
+
+# size factors
+sizeFactors(sce) <- colSums(assay(sce))
+```
+
+Explore Tung dataset
+Let's take a first look at the Tung dataset. We first want to remove genes that have only zero counts since we'll never get information from these genes. We then want to identify the ERCC genes to be able to use them in the next exercises.
+
+You'll experiment with using counts() and isSpike() here, and the data is stored in the SingleCellExperiment object sce.
+
+```{r}
+sce
+
+# find non-zero counts
+nonZero <- (counts(sce) > 0)
+
+# find rows/genes with at least one non-zero count 
+keep <- (rowSums(nonZero) > 0)
+
+# keep only the genes with non-zero count the SCE object 
+sce_2 <- sce[keep, ]
+
+# explore sce_2
+sce_2
+
+# spike-ins ERCC
+isSpike(sce_2, "ERCC") <- grepl("^ERCC-", rownames(sce_2))
+```
+
+-----Quality Control-------------------------
+Calculate QC metrics
+To remove problematic cells and genes, we want to calculate quality control metrics using the calculateQCMetrics() function from the package scater, which is a useful package for quality control and analysis of single-cell data. These metrics will help us filter out low quality genes and cells.
+
+Remember that to identify problematic cells, experimentalists sometimes use synthetic spike-in RNAs as positive controls. The spike-in RNA names start with "ERCC", and are already stored as isSpike(sce, "ERCC").
+
+```{r}
+# load scater
+library(scater)
+
+# calculate QCs
+sce <- calculateQCMetrics(sce, feature_controls = list(ERCC = isSpike(sce, "ERCC")))
+
+# explore colData of sce
+colData(sce)
+```
+
+
+Filter cells with small library size
+We want to filter out cells with small library size (called total_counts in package scater) since these cells are most likely broken. Recall from the previous chapter that library size means the total number of reads per cell.
+
+In this exercise you will plot the distribution of the library size, and then only keep the cells that have library size over 20000, which is assigned to the variable threshold. The SCE object sce is available in your workspace.
+
+```{r}
+# set threshold
+threshold <- 20000
+
+# plot density
+plot(density(sce$total_counts), main = 'Density - total_counts')
+abline(v = threshold)
+
+# determine the cells to keep
+keep <- (sce$total_counts > threshold)
+
+# tabulate the cells that were kept on the previous step
+table(keep)
+```
+
+Filter cells by number of expressed genes
+To remove problematic cells, we want to filter out cells with small total number of genes with non-zero count (called total_features in the package scater).
+
+```{r}
+# set threshold
+threshold <- 6000
+
+# plot density
+plot(density(sce$total_features), main = 'Density - total_features')
+abline(v = threshold)
+
+# determine the cells to keep
+keep <- (sce$total_counts > threshold )
+
+# tabulate the cells that were kept on the previous step
+table(keep)
+```
+
+Use of positive controls
+To remove problematic cells, we can use the ratio between synthetic spike-in RNAs and endogenous RNAs. ERCC spike-in genes are synthetic RNAs added to the sample in known quantity that are used to filter out cells with small amount of endogenous RNAs. The rationale is that cells with a high level of spike-in RNAs had low starting amounts of RNA likely because they were stressed or dead, so we should filter them out.
+
+In this exercise, you will look at quantity of ERCC versus endogenous RNA for each batch, and identify a batch to remove.
+
+```{r}
+#extract cell data into a data frame
+cDataFrame <- as.data.frame(colData(sce))
+
+# plot cell data
+ggplot(cDataFrame, aes(x = total_counts, y = total_counts_ERCC, color = batch)) + 
+  geom_point()
+
+# keep cells
+keep <- (sce$batch != "NA19098.r2" )
+
+# tabulate kept cells
+table(keep)
+```
+
+Filter genes mainly not expressed
+We want to remove genes that are not heavily expressed since they are not very informative. Defining a gene as heavily expressed depends on the sequencing depth, but a reasonable way to filter the genes based on this criteria is to keep genes that have a count of at least 1 in at least 2 cells.
+
+Remember that we want to perform gene filtering after cell filtering since some genes may only be expressed in cells removed in the cell filtering step.
+
+The single cell experiment data is loaded in as sce.
+
+```{r}
+# load SingleCellExperiment
+library(SingleCellExperiment)
+
+# filter genes with at least a count of 1 in at least 2 cells
+filter_genes <- apply(counts(sce), 
+                      1, 
+                      function(x){length(x[x >= 1]) >= 2})
+
+# tabulate the results of filter_genes
+table(filter_genes)
+```
+
+
+Batch effect
+To observe the batch effect, we want to plot the first two principal components of the counts using plotPCA() from scater. Batch effects are common technical artifacts in single-cell data, as it means cells sequenced in the same batch are more similar than cells sequenced in different batches.
+
+Batch effect is unwanted because we would rather detect the biological signal of interest (e.g., group cells according to their gene expression) than technical variation (e.g., batch).
+
+```{r}
+# PCA raw counts
+plotPCA(sce, exprs_values = "counts",
+    colour_by = "batch", shape_by = "individual")
+
+# PCA log counts
+plotPCA(sce, exprs_values ="logcounts_raw",
+        colour_by = "batch", shape_by = "individual")
+```
+
+
+Correlation between PC1 and library size
+The first principal component captures the highest variation in the data and is often correlated with the library size, which means that the highest variation in the data is technical (total number of reads sequenced for each cell) instead of biological.
+
+You will plot PC1 (x-axis) versus library size (y-axis) using ggplot() to observe correlation between the first principal component (PC1) and library size. The SingleCellExperiment object sce has been preloaded for you, and the SingleCellExperiment and ggplot2 libraries have been imported.
+
+```{r}
+#find first 2 PCs
+pca <- reducedDim(sce, "PCA")[, 1:2]
+
+#create cdata
+cdata <- data.frame(PC1 = pca[, 1],
+                    libsize = sce$total_counts,
+                    batch = sce$batch)
+
+#plot pc1 versus libsize
+ggplot(cdata, aes(x = PC1, y =libsize, color = batch)) +
+  geom_point()
+```
+
+Compute size factors
+To remove technical artifacts, we want to compute size factors using the package scran.
+
+```{r}
+# load scran
+library(scran)
+
+# find size factors
+sce <- computeSumFactors(sce)
+
+# display size factor histogram
+hist(sizeFactors(sce))
+```
+
+Normalize SCE object
+Recall that normalization can help us to remove technical artifacts. In this exercise, you will compute normalized log counts using the normalization method normalize() from the package scater. You can check out the documentation for normalize()
+
+```{r}
+# view the assays for sce
+assays(sce)
+
+# normalize sce
+normalized_sce <- normalize(sce)
+
+# view the assays for normalized_sce
+assays(normalized_sce)
+
+# examine the counts matrix of sce and the logcounts matrix of normalized_sce
+counts(sce)[1:3, 1:3]
+logcounts(normalized_sce)[1:3, 1:3]
+```
+
+
+----------Dimensional Reduction (PCA)-----------------------------------
+Explore dataset
+The goal of this exercise is to familiarize yourself with the mouse epithelium dataset.
+
+```{r}
+# explore sce
+sce
+
+# find dimensions
+mydims <- dim(sce)
+
+# extract cell and gene names
+cellNames <- colnames(sce)
+geneNames <- rownames(sce)
+```
+Nested experiment design
+In order to further explore the mouse epithelium dataset, you will look at the batches in which each cell has been sequenced. Is there a correlation between the batches and clusters found in the published paper?
+
+```{r}
+# cell data
+cData <- colData(sce)
+
+#print column names
+colnames(cData)
+
+# table batch & clusters
+cData <- cData[, c('Batch', 'publishedClusters')]
+
+#tabulate cData
+table(cData)
+```
+
+Plot PCA of counts
+The mouse epithelium dataset has been stored in the sce object of class SingleCellExperiment. To perform dimensionality reduction of the counts of the object sce, we can perform principal component analysis (PCA).
+
+```{r}
+# load scater
+library(scater)
+
+# plot pc1 and pc2 counts
+plotPCA(
+    object = sce,
+    exprs_values = "counts",
+    shape_by = "Batch",
+    colour_by = "publishedClusters"
+)
+```
+
+
+
+Plot PCA of log counts
+Dimensionality reduction is usually performed on the log counts instead of the counts to reduce the bias towards highly expressed genes (higher counts dominate the variation levels between the cells).
+
+```{r}
+# explore initial assays
+assays(sce)
+
+# create log counts
+logcounts <- log1p(assay(sce))
+
+# add log counts
+assay(sce, 'logcounts') <- logcounts
+assays(sce)
+
+# pca log counts
+plotPCA(object = sce, exprs_values = "logcounts",
+    shape_by = "Batch", colour_by = "publishedClusters")
+```
+
+Plot t-SNE of log counts
+t-Distributed Stochastic Neighbor Embedding (t-SNE) is a technique for dimensionality reduction that is widely used for the visualization of scRNA-Seq datasets. To perform dimensionality reduction, we can use the function plotTSNE() from the package scater.
+
+The mouse epithelium data set is available in your workspace as sce.
+
+```{r}
+# default tSNE
+plotTSNE(
+    sce,
+    exprs_values = "counts",
+    shape_by = "publishedClusters",
+    colour_by = "Batch",
+    perplexity = 5
+)
+```
+
+Subset sce
+For computational efficacy, we want to retain only the 50 most variable genes of the sce object.
+
+The package magrittr is already loaded for you.
+
+```{r}
+# gene variance 
+vars <- assay(sce) %>% log1p %>% rowVars
+
+#rename vars
+names(vars) <- rownames(sce)
+
+#sort vars
+vars_2 <- sort(vars, decreasing = TRUE)
+head(vars_2)
+
+# subset sce 
+sce_sub <- sce[names(vars_2[1:50]),]
+sce_sub
+```
+
+
+Perform PCA on log counts
+To perform PCA on the log of the counts, we want to use the prcomp() function and store the principal components (PCs) into the reducedDim slot of the sce_sub object.
+
+```{r}
+# log counts
+logcounts <- log1p(assay(sce_sub))
+
+# transpose
+tlogcounts <- t(logcounts)
+
+# perform pca
+pca <- prcomp(tlogcounts)
+
+# store pca matrix in sce
+reducedDims(sce_sub) <- SimpleList(PCA = pca$x)
+head(reducedDim(sce_sub, "PCA")[, 1:2])
+```
+
+Plot PCA using ggplot
+To visualize a single cell dataset, we can perform dimensionality reduction (here PCA) and then plot the first two dimensions where each point on the plot represents a cell.
+
+```{r}
+# Extract PC1 and PC2 and create a data frame
+pca <- reducedDim(sce_sub, "PCA")[, 1:2]
+col_shape <- data.frame(publishedClusters = colData(sce)$publishedClusters,
+                        Batch = factor(sce$Batch))
+df <- cbind(pca, col_shape)
+
+# plot PC1, PC2
+ggplot(df, aes(x = PC1, y = PC2, 
+            colour = publishedClusters, 
+            shape = Batch)) + 
+  geom_point()
+```
+
+Create Seurat object
+To perform clustering using the package Seurat, we need to create a Seurat object. The goal of this exercise is to create a Seurat object for the mouse epithelium dataset used in the previous chapter using the function CreateSeuratObject().
+
+```{r}
+# load Seurat
+library(Seurat)
+
+# explore sce
+sce
+
+#create seurat object
+seuset <- CreateSeuratObject(raw.data = assay(sce),
+              normalization.method = "LogNormalize", 
+              scale.factor = 10000,
+              meta.data = as.data.frame(colData(sce)))
+
+# scale seuset object
+scaled_seuset <- ScaleData(object = seuset)
+```
+
+Perform PCA on Seurat object
+In scRNA-seq analysis, in order to reduce technical noise and computational time, dimensionality reduction is often used as a preliminary step prior to clustering. Thus, prior to clustering cells of the seuset object, we want to perform PCA to reduce the number of dimensions. To do so, we'll use the Seurat's RunPCA().
+
+```{r}
+# perform pca
+seuset <- RunPCA(
+    object = seuset, 
+    pc.genes = rownames(seuset@raw.data), 
+    do.print = FALSE
+)
+# plot pca
+PCAPlot(object = seuset,
+        pt.shape = 'Batch',
+        group.by = 'publishedClusters')
+```
+
+Cluster Analysis
+
+```{r}
+seuset <- FindClusters(
+    object = seuset, 
+    reduction.type = "pca", 
+    dims.use = 1:10, 
+    resolution = 1.8, 
+    print.output = FALSE
+)
+```
+
+Fit zero-inflated regression using MAST
+To identify genes that are differentially expressed (DE) between cell type 9 and the other cell types, we want to fit a zero-inflated regression using the function zlm() from the package MAST.
+
+```{r}
+# load MAST
+library(MAST)
+
+# SingleCellAssay object 
+sca
+
+# fit zero-inflated regression 
+zir_model <- zlm(~ celltype + cngeneson, sca) 
+
+# summary with likelihood test ratio
+summary_lrt <- summary(zir_model, doLRT = "celltype9")
+
+# explore summary_lrt
+summary_lrt
+```
+
+Create result table
+In the previous exercise, you fitted a zero-inflated regression to the mouse epithelium data set to compare the gene expression of cells from cell type nine to the other cells. Let's now process the summary table of the fitted model to get a p-value and log fold change (logFC) for each gene.
+
+In this exercise, you'll use a summary data table, which is of class data.table. The use of the package data.table is out of the scope of this course, but we need to use it here to extract p-values and logFC.
+
+```{r}
+# get summary table
+fit <- summary_lrt$datatable
+
+# pvalue df
+pvalue <- fit[contrast == 'celltype9' & component == 'H', .(primerid, `Pr(>Chisq)`)]
+  			       
+# logFC df
+logFC <- fit[contrast == 'celltype9' & component == 'logFC', .(primerid, coef)]
+
+# pvalues and logFC
+fit <- merge(pvalue, logFC, by = 'primerid')
+
+# print head of fit
+head(fit)
+
+```
+
+Compute adjusted p-values
+In the previous exercise, we performed J separate hypothesis tests where J is the number of genes. In a typical single cell analysis where J is about 10,000 and if we use a standard p-value cut-off of 0.05, we'd expect about 500 genes to be deemed significant just by chance. To correct for multiple testing, we want to calculate the adjusted p-values. To do so, we can to use the function p.adjust().
+
+In this exercise, you'll use the object fit created in the previous exercise, which is of class data.table. The use of the package data.table is out of the scope of this course, but we need to use it here to calculate adjusted p-values.
+```{r}
+# adjusted pvalues
+fit[, padjusted:=p.adjust(`Pr(>Chisq)`, 'fdr')]
+
+# result table
+res <- data.frame(gene = fit$primerid,
+                 pvalue = fit[,'Pr(>Chisq)'],
+                 padjusted = fit$padjusted,
+                 logFC = fit$coef)
+
+# print head of res
+head(res)
+```
+
+Plot volcano plot
+To visualize the differentially expressed (DE) genes and choose threshold to identify DE genes, we want to plot a volcano plot. This plot has the log fold change (logFC) as the x-axis and -log10 of the adjusted p-values as the y-axis.
+
+```{r}
+# most DE 
+res <- res[order(res$padjusted), ]
+mostDE <- res$gene[1:20]
+res$mostDE <- res$gene %in% mostDE
+
+# volcano plot
+ggplot(res,
+    aes(x = logFC, y = -log10(padjusted), color = mostDE)) +
+  geom_point() +
+  ggtitle("Volcano plot") +
+  xlab("log2 fold change") + 
+  ylab("-log10 adjusted p-value")
+```
+Plot heatmap
+To visualize the (DE) genes, we want to plot a heatmap. To do so, we can use the function aheatmap() from the library NMF.
+
+The variable mostDE from Exercise 11 is available for you in your workspace.
+
+```{r}
+# load NMF
+library(NMF)
+
+# normalize log counts
+norm <- assay(sce[mostDE, ], "logcounts")
+mat <- as.matrix(norm)
+
+# heatmap
+aheatmap(norm, annCol = colData(sce)$publishedClusters)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
